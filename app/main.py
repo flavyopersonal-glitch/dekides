@@ -1,187 +1,147 @@
-from fastapi import FastAPI, Depends, HTTPException, Header
-from app.database import supabase
-from app.auth import verificar_perfil
+import logging
+import os
 
-app = FastAPI(title="DeKids - Sistema de Estoque e Finanças")
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.auth import verificar_perfil
+from app.database import supabase, supabase_admin
+from app.schemas import CompraEntrada, Login, ProdutoCadastro, UsuarioCadastro, VendaCriacao
+
+logger = logging.getLogger(__name__)
+app = FastAPI(title="DeKids - Sistema de Estoque e Finanças", version="1.0.0")
+
+origens = [origem.strip() for origem in os.getenv("CORS_ORIGINS", "").split(",") if origem.strip()]
+if origens:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origens,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+def exigir_gestao(usuario: dict) -> None:
+    if usuario["role"] not in {"master", "admin"}:
+        raise HTTPException(status_code=403, detail="Acesso permitido apenas para Admin ou Master.")
+
+
+def serializar(modelo) -> dict:
+    """Converte Decimals de modelos Pydantic para valores aceitos pelo PostgREST."""
+    return modelo.model_dump(mode="json")
+
 
 @app.get("/")
 def raiz():
-    return {"status": "Online", "sistema": "DeKids Moda Infantil"}
+    return {"status": "online", "sistema": "DeKids Moda Infantil"}
 
 
-# =========================================================================
-# 👤 1. GESTÃO DE LOGINS / USUÁRIOS (Restrito: Apenas Master e Admin)
-# =========================================================================
-
-@app.post("/usuarios/cadastro/")
-async def cadastrar_usuario(dados_usuario: dict, usuario_logado: dict = Depends(verificar_perfil)):
-    # Garante que funcionários comuns não criem novos logins
-    if usuario_logado["role"] not in ["master", "admin"]:
-        raise HTTPException(status_code=403, detail="Acesso negado. Apenas Admin ou Master podem criar logins.")
-    
+@app.post("/auth/login/")
+async def login(dados: Login):
     try:
-        # 1. Cria o usuário no Auth do Supabase (Email e Senha)
-        auth_response = supabase.auth.admin.create_user({
-            "email": dados_usuario["email"],
-            "password": dados_usuario["senha"],
-            "email_confirm": True
-        })
-        
-        user_id = auth_response.user.id
-        
-        # 2. Vincula o ID criado ao perfil na nossa tabela 'usuarios' com a role definida
-        perfil_response = supabase.table("usuarios").insert({
-            "id": user_id,
-            "nome": dados_usuario["nome"],
-            "role": dados_usuario["role"], # 'master', 'admin' ou 'funcionario'
-            "ativo": True
-        }).execute()
-        
-        return {"status": "Sucesso", "usuario": perfil_response.data[0]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Erro ao criar usuário: {str(e)}")
+        sessao = supabase.auth.sign_in_with_password({"email": dados.email, "password": dados.senha})
+        if not sessao.user or not sessao.session:
+            raise ValueError("Sessão não criada")
+        perfil = supabase.table("usuarios").select("nome, role, ativo").eq("id", sessao.user.id).single().execute().data
+    except Exception as exc:
+        logger.info("Tentativa de login sem sucesso para %s", dados.email)
+        raise HTTPException(status_code=401, detail="E-mail ou senha inválidos.") from exc
+
+    if not perfil or not perfil.get("ativo"):
+        raise HTTPException(status_code=403, detail="Usuário inativo ou sem perfil de acesso.")
+    return {
+        "access_token": sessao.session.access_token,
+        "refresh_token": sessao.session.refresh_token,
+        "usuario": {"nome": perfil["nome"], "role": perfil["role"]},
+    }
 
 
-# =========================================================================
-# 📦 2. CADASTRO DE PRODUTOS E GRADE (Restrito: Apenas Master e Admin)
-# =========================================================================
+@app.get("/auth/me/")
+async def meu_perfil(usuario: dict = Depends(verificar_perfil)):
+    return usuario
 
-@app.post("/produtos/cadastro/")
-async def cadastrar_produto_completo(dados_produto: dict, usuario_logado: dict = Depends(verificar_perfil)):
-    if usuario_logado["role"] not in ["master", "admin"]:
-        raise HTTPException(status_code=403, detail="Acesso negado para cadastro de produtos.")
-        
+
+@app.post("/usuarios/cadastro/", status_code=status.HTTP_201_CREATED)
+async def cadastrar_usuario(dados: UsuarioCadastro, usuario: dict = Depends(verificar_perfil)):
+    exigir_gestao(usuario)
+    if dados.role == "master" and usuario["role"] != "master":
+        raise HTTPException(status_code=403, detail="Apenas Master pode criar outro Master.")
     try:
-        # 1. Cadastra o Produto Pai
-        produto_pai = supabase.table("produtos").insert({
-            "nome": dados_produto["nome"],
-            "descricao": dados_produto.get("descricao"),
-            "categoria": dados_produto.get("categoria"),
-            "marca": dados_produto.get("marca"),
-            "preco_venda": dados_produto["preco_venda"]
-        }).execute()
-        
-        produto_id = produto_pai.data[0]["id"]
-        
-        # 2. Se houver uma grade inicial de variações (Tamanho/Cor), cadastra elas
-        if "variacoes" in dados_produto and dados_produto["variacoes"]:
-            variacoes = []
-            for var in dados_produto["variacoes"]:
-                variacoes.append({
-                    "produto_id": produto_id,
-                    "tamanho": var["tamanho"], # Ex: RN, P, 2A
-                    "cor": var["cor"],
-                    "codigo_barras": var.get("codigo_barras"),
-                    "estoque_atual": var.get("estoque_atual", 0),
-                    "estoque_minimo": var.get("estoque_minimo", 2)
-                })
+        auth_response = supabase_admin.auth.admin.create_user(
+            {"email": dados.email, "password": dados.senha, "email_confirm": True}
+        )
+        perfil = supabase.table("usuarios").insert(
+            {"id": auth_response.user.id, "nome": dados.nome, "role": dados.role, "ativo": True}
+        ).execute()
+        return {"status": "sucesso", "usuario": perfil.data[0]}
+    except Exception as exc:
+        logger.exception("Erro ao cadastrar usuário")
+        raise HTTPException(status_code=400, detail="Não foi possível cadastrar o usuário.") from exc
+
+
+@app.post("/produtos/cadastro/", status_code=status.HTTP_201_CREATED)
+async def cadastrar_produto_completo(dados: ProdutoCadastro, usuario: dict = Depends(verificar_perfil)):
+    exigir_gestao(usuario)
+    try:
+        produto = supabase.table("produtos").insert(
+            {
+                "nome": dados.nome,
+                "descricao": dados.descricao,
+                "categoria": dados.categoria,
+                "marca": dados.marca,
+                "preco_venda": str(dados.preco_venda),
+            }
+        ).execute()
+        produto_id = produto.data[0]["id"]
+        if dados.variacoes:
+            variacoes = [{"produto_id": produto_id, **serializar(item)} for item in dados.variacoes]
             supabase.table("variacoes_produto").insert(variacoes).execute()
-            
-        return {"status": "Sucesso", "produto_id": produto_id, "mensagem": "Produto e grade salvos."}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "sucesso", "produto_id": produto_id, "mensagem": "Produto e grade salvos."}
+    except Exception as exc:
+        logger.exception("Erro ao cadastrar produto")
+        raise HTTPException(status_code=400, detail="Não foi possível cadastrar o produto.") from exc
 
 
-# =========================================================================
-# 🛒 3. ENTRADA DE ESTOQUE / COMPRAS (Restrito: Apenas Master e Admin)
-# =========================================================================
-
-@app.post("/compras/entrada/")
-async def registrar_compra_estoque(dados_compra: dict, usuario_logado: dict = Depends(verificar_perfil)):
-    if usuario_logado["role"] not in ["master", "admin"]:
-        raise HTTPException(status_code=403, detail="Acesso negado para registro de compras.")
-        
+@app.post("/compras/entrada/", status_code=status.HTTP_201_CREATED)
+async def registrar_compra_estoque(dados: CompraEntrada, usuario: dict = Depends(verificar_perfil)):
+    exigir_gestao(usuario)
     try:
-        # 1. Registra o cabeçalho da compra de fornecedor
-        compra = supabase.table("compras").insert({
-            "fornecedor": dados_compra.get("fornecedor"),
-            "valor_total": dados_compra["valor_total"],
-            "status": "recebido"
-        }).execute()
-        
-        compra_id = compra.data[0]["id"]
-        
-        # 2. Registra os itens comprados (Custo Unitário e Quantidade)
-        itens_compra = []
-        for item in dados_compra["itens"]:
-            itens_compra.append({
-                "compra_id": compra_id,
-                "variacao_id": item["variacao_id"],
-                "quantidade": item["quantidade"],
-                "custo_unitario": item["custo_unitario"]
-            })
-            
-            # 3. Atualiza o estoque atual somando o que foi comprado
-            # Nota: Podemos automatizar isso com trigger futuramente, mas no código fica assim:
-            supabase.rpc("incrementar_estoque", {
-                "var_id": item["variacao_id"], 
-                "qtd": item["quantidade"]
-            }).execute()
-            
-        supabase.table("itens_compra").insert(itens_compra).execute()
-        
-        # 4. Lança a saída automática no Fluxo de Caixa Empresarial
-        supabase.table("fluxo_caixa").insert({
-            "tipo": "saida",
-            "categoria": "compra_estoque",
-            "valor": dados_compra["valor_total"],
-            "descricao": f"Compra de estoque do fornecedor: {dados_compra.get('fornecedor', 'Não informado')}",
-            "compra_id": compra_id
-        }).execute()
-        
-        return {"status": "Sucesso", "compra_id": compra_id, "mensagem": "Estoque atualizado e financeiro lançado."}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        resultado = supabase_admin.rpc("registrar_compra", {"p_compra": serializar(dados)}).execute()
+        return {"status": "sucesso", **resultado.data}
+    except Exception as exc:
+        logger.exception("Erro ao registrar compra")
+        raise HTTPException(status_code=400, detail="Não foi possível registrar a compra.") from exc
 
-
-# =========================================================================
-# 💰 4. CONTROLE DE ESTOQUE & VENDAS (Disponível para Todos os Logins)
-# =========================================================================
 
 @app.get("/produtos/")
-async def listar_produtos_e_estoque(usuario_logado: dict = Depends(verificar_perfil)):
-    # Traz a lista de roupas com seus respectivos tamanhos, cores e quantidades em estoque
-    response = supabase.table("produtos").select("*, variacoes_produto(*)").execute()
-    return response.data
-
-
-@app.post("/vendas/")
-async def criar_venda(dados_venda: dict, usuario_logado: dict = Depends(verificar_perfil)):
+async def listar_produtos_e_estoque(_: dict = Depends(verificar_perfil)):
     try:
-        # Cadastra a venda usando o ID do funcionário/admin que está operando o sistema
-        venda = supabase.table("vendas").insert({
-            "usuario_id": usuario_logado["id"],
-            "valor_total": dados_venda["valor_total"],
-            "desconto": dados_venda.get("desconto", 0),
-            "forma_pagamento": dados_venda["forma_pagamento"]
-        }).execute()
-        
-        venda_id = venda.data[0]["id"]
-        
-        # Cadastra os itens vendidos (O trigger do banco vai reduzir o estoque e lançar no caixa)
-        itens = []
-        for item in dados_venda["itens"]:
-            itens.append({
-                "venda_id": venda_id,
-                "variacao_id": item["variacao_id"],
-                "quantidade": item["quantidade"],
-                "preco_unitario_pago": item["preco_unitario_pago"]
-            })
-        supabase.table("itens_venda").insert(itens).execute()
-        
-        return {"status": "Sucesso", "venda_id": venda_id, "mensagem": "Venda concluída com sucesso."}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return supabase.table("produtos").select("*, variacoes_produto(*)").execute().data
+    except Exception as exc:
+        logger.exception("Erro ao consultar produtos")
+        raise HTTPException(status_code=503, detail="Não foi possível consultar o estoque.") from exc
 
 
-# =========================================================================
-# 📈 5. RELATÓRIO FINANCEIRO (Restrito: Apenas Master e Admin)
-# =========================================================================
+@app.post("/vendas/", status_code=status.HTTP_201_CREATED)
+async def criar_venda(dados: VendaCriacao, usuario: dict = Depends(verificar_perfil)):
+    if dados.desconto > dados.valor_total:
+        raise HTTPException(status_code=422, detail="O desconto não pode ser maior que o total da venda.")
+    try:
+        resultado = supabase_admin.rpc(
+            "registrar_venda", {"p_usuario_id": usuario["id"], "p_venda": serializar(dados)}
+        ).execute()
+        return {"status": "sucesso", **resultado.data}
+    except Exception as exc:
+        logger.exception("Erro ao registrar venda")
+        raise HTTPException(status_code=400, detail="Não foi possível concluir a venda.") from exc
+
 
 @app.get("/financeiro/fluxo-caixa/")
-async def ver_financeiro(usuario_logado: dict = Depends(verificar_perfil)):
-    if usuario_logado["role"] not in ["master", "admin"]:
-        raise HTTPException(status_code=403, detail="Acesso negado. Apenas Admin ou Master visualizam o financeiro.")
-        
-    response = supabase.table("fluxo_caixa").select("*").order("data_competencia", desc=True).execute()
-    return response.data
+async def ver_financeiro(usuario: dict = Depends(verificar_perfil)):
+    exigir_gestao(usuario)
+    try:
+        return supabase.table("fluxo_caixa").select("*").order("data_competencia", desc=True).execute().data
+    except Exception as exc:
+        logger.exception("Erro ao consultar fluxo de caixa")
+        raise HTTPException(status_code=503, detail="Não foi possível consultar o financeiro.") from exc
