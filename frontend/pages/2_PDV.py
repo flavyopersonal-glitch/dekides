@@ -1,10 +1,12 @@
 import sys
+from uuid import uuid4
 from pathlib import Path
 
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from api_client import api_error, request  # noqa: E402
+from money import dinheiro, total_itens
+from api_client import api_error, request, listar_todos  # noqa: E402
 
 st.set_page_config(page_title="PDV", page_icon="🛒", layout="wide")
 
@@ -17,13 +19,36 @@ if "carrinho" not in st.session_state:
     st.session_state.carrinho = []
 
 try:
-    resposta = request("GET", "/produtos/")
-    produtos = resposta.json() if resposta.ok else []
-    if not resposta.ok:
-        st.error(api_error(resposta))
+    produtos = listar_todos("/produtos/")
 except Exception:
     produtos = []
     st.error("Não foi possível buscar os produtos.")
+
+# Uma tentativa com resposta incerta deve reutilizar exatamente a mesma operação.
+if st.session_state.get("venda_pendente"):
+    st.warning("Há uma venda aguardando confirmação. Confirme antes de iniciar outra.")
+    if st.button("Confirmar ou tentar novamente", type="primary"):
+        try:
+            resposta = request("POST", "/vendas/", json=st.session_state.venda_pendente)
+            if resposta.ok:
+                st.session_state.carrinho = []
+                del st.session_state["venda_pendente"]
+                st.session_state["venda_sucesso"] = True
+                st.rerun()
+            else:
+                st.error(api_error(resposta))
+                if resposta.status_code in (409, 422):
+                    del st.session_state["venda_pendente"]
+                    st.session_state["erro_venda"] = api_error(resposta)
+                    st.rerun()
+        except Exception:
+            st.error("Sem confirmação da API. Tente novamente; a mesma venda não será duplicada.")
+    st.stop()
+if st.session_state.pop("venda_sucesso", False):
+    st.success("Venda concluída. Estoque e fluxo de caixa atualizados.")
+
+if st.session_state.get("erro_venda"):
+    st.error(st.session_state.pop("erro_venda"))
 
 opcoes = []
 for produto in produtos:
@@ -57,12 +82,12 @@ with st.expander("Adicionar item", expanded=True):
                     st.error("A quantidade total no carrinho supera o estoque disponível.")
                 else:
                     existente["quantidade"] += quantidade
-                    existente["preco_unitario_pago"] = preco
+                    existente["preco_unitario_pago"] = str(dinheiro(preco))
                     st.rerun()
             else:
                 st.session_state.carrinho.append({
                     "variacao_id": selecionado["variacao"]["id"], "quantidade": quantidade,
-                    "preco_unitario_pago": preco, "descricao": labels[indice],
+                    "preco_unitario_pago": str(dinheiro(preco)), "descricao": labels[indice],
                 })
                 st.rerun()
 
@@ -71,7 +96,7 @@ if not st.session_state.carrinho:
     st.caption("Adicione itens para iniciar uma venda.")
 else:
     for posicao, item in enumerate(st.session_state.carrinho):
-        subtotal = item["quantidade"] * item["preco_unitario_pago"]
+        subtotal = item["quantidade"] * dinheiro(item["preco_unitario_pago"])
         coluna_item, coluna_valor, coluna_remover = st.columns([6, 2, 1])
         coluna_item.write(f"{item['quantidade']}x {item['descricao']}")
         coluna_valor.write(f"R$ {subtotal:.2f}")
@@ -79,23 +104,15 @@ else:
             st.session_state.carrinho.pop(posicao)
             st.rerun()
 
-    bruto = sum(item["quantidade"] * item["preco_unitario_pago"] for item in st.session_state.carrinho)
+    bruto = total_itens(st.session_state.carrinho)
     forma = st.selectbox("Forma de pagamento", ["pix", "credito", "debito", "dinheiro"])
     desconto = st.number_input("Desconto (R$)", min_value=0.0, max_value=float(bruto), value=0.0, step=0.01)
-    total = bruto - desconto
+    total = bruto - dinheiro(desconto)
     st.markdown(f"### Total: R$ {total:.2f}")
     if st.button("Concluir venda", type="primary"):
         payload = {
-            "valor_total": bruto, "desconto": desconto, "forma_pagamento": forma,
+            "operacao_id": str(uuid4()), "valor_total": str(bruto), "desconto": str(dinheiro(desconto)), "forma_pagamento": forma,
             "itens": [{k: v for k, v in item.items() if k != "descricao"} for item in st.session_state.carrinho],
         }
-        try:
-            resposta = request("POST", "/vendas/", json=payload)
-            if resposta.ok:
-                st.session_state.carrinho = []
-                st.success("Venda concluída. Estoque e fluxo de caixa atualizados.")
-                st.rerun()
-            else:
-                st.error(api_error(resposta))
-        except Exception:
-            st.error("Não foi possível concluir a venda.")
+        st.session_state.venda_pendente = payload
+        st.rerun()
