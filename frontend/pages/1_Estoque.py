@@ -4,6 +4,7 @@ from pathlib import Path
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from money import dinheiro
 from api_client import api_error, request, listar_todos  # noqa: E402
 
 st.set_page_config(page_title="Estoque", page_icon="📦", layout="wide")
@@ -56,7 +57,7 @@ with aba_cadastro:
         if salvar:
             payload = {
                 "nome": nome, "marca": marca or None, "categoria": categoria or None,
-                "descricao": descricao or None, "preco_venda": preco,
+                "descricao": descricao or None, "preco_venda": str(dinheiro(preco)),
                 "variacoes": [{"tamanho": tamanho, "cor": cor, "estoque_atual": quantidade,
                                 "codigo_barras": codigo_barras or None}],
             }

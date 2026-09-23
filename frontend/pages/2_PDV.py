@@ -27,7 +27,8 @@ except Exception:
 # Uma tentativa com resposta incerta deve reutilizar exatamente a mesma operação.
 if st.session_state.get("venda_pendente"):
     st.warning("Há uma venda aguardando confirmação. Confirme antes de iniciar outra.")
-    if st.button("Confirmar ou tentar novamente", type="primary"):
+    tentar = st.button("Confirmar ou tentar novamente", type="primary")
+    if st.session_state.pop("enviar_venda", False) or tentar:
         try:
             resposta = request("POST", "/vendas/", json=st.session_state.venda_pendente)
             if resposta.ok:
@@ -115,4 +116,5 @@ else:
             "itens": [{k: v for k, v in item.items() if k != "descricao"} for item in st.session_state.carrinho],
         }
         st.session_state.venda_pendente = payload
+        st.session_state.enviar_venda = True
         st.rerun()

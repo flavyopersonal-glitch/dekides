@@ -4,7 +4,7 @@ import requests
 import streamlit as st
 
 API_URL = os.getenv("DEKIDS_API_URL", "http://localhost:8000").rstrip("/")
-TIMEOUT = 15
+TIMEOUT = (10, 60)
 
 
 def headers() -> dict:

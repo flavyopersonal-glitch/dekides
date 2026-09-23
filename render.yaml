@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: dekides
+    runtime: docker
+    plan: free
+    region: ohio
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: NEON_AUTH_BASE_URL
+        sync: false
+      - key: NEON_AUTH_ORIGIN
+        value: https://dekides.onrender.com

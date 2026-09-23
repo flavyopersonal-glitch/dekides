@@ -21,6 +21,8 @@ if st.session_state.get("erro_compra"):
     st.error(st.session_state.pop("erro_compra"))
 if st.session_state.get("compra_pendente"):
     st.warning("Confirme a compra pendente antes de iniciar outra.")
+    st.write(f"Fornecedor: {st.session_state.compra_pendente.get('fornecedor') or 'Não informado'}")
+    st.write(f"Total: R$ {st.session_state.compra_pendente['valor_total']}")
     if st.button("Confirmar ou tentar novamente", type="primary"):
         try:
             resposta = request("POST", "/compras/entrada/", json=st.session_state.compra_pendente)

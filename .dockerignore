@@ -7,3 +7,10 @@ __pycache__
 *.pyo
 .pytest_cache
 README.md
+
+.env.*
+node_modules
+.agents
+.neon
+.neon-auth-openapi.json
+.logs

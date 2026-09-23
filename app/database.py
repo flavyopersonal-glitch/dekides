@@ -1,24 +1,41 @@
 import os
+from contextlib import contextmanager
+from threading import Lock
+
 from dotenv import load_dotenv
-from supabase import Client, create_client
-from supabase.lib.client_options import ClientOptions
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
-load_dotenv()
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-if not all((SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_KEY)):
-    raise RuntimeError("Configure SUPABASE_URL, SUPABASE_KEY e SUPABASE_SERVICE_KEY.")
+load_dotenv(os.getenv("DEKIDS_ENV_FILE", ".env"))
+_pool = None
+_lock = Lock()
 
 
-def cliente_auth() -> Client:
-    # Cada operação recebe sua própria sessão, sem renovação em segundo plano.
-    return create_client(SUPABASE_URL, SUPABASE_KEY,
-                         options=ClientOptions(auto_refresh_token=False, persist_session=False))
+def pool():
+    global _pool
+    with _lock:
+        if _pool is None:
+            url = os.getenv("DATABASE_URL")
+            if not url:
+                raise RuntimeError("Configure DATABASE_URL para o Neon.")
+            _pool = ConnectionPool(url, min_size=0, max_size=5, timeout=15,
+                                   max_idle=60, kwargs={"row_factory": dict_row,
+                                   "connect_timeout": 10, "application_name": "dekids"})
+        return _pool
 
 
-# Nunca faça login neste cliente. As permissões são verificadas pela API.
-supabase_admin: Client = create_client(
-    SUPABASE_URL, SUPABASE_SERVICE_KEY,
-    options=ClientOptions(auto_refresh_token=False, persist_session=False),
-)
+@contextmanager
+def connection():
+    with pool().connection() as conn:
+        with conn.transaction():
+            conn.execute("SET LOCAL search_path = dekids, public")
+            conn.execute("SET LOCAL statement_timeout = '15s'")
+            yield conn
+
+
+def close_pool():
+    global _pool
+    with _lock:
+        if _pool:
+            _pool.close()
+            _pool = None

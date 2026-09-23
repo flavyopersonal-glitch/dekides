@@ -1,38 +1,70 @@
-# DeKids
+# DeKids — Neon
 
-Estoque, PDV, compras, usuários e fluxo de caixa para moda infantil.
+Sistema de estoque, PDV, compras, usuários e fluxo de caixa. Backend FastAPI, telas Streamlit, PostgreSQL e autenticação gerenciada no Neon. O aplicativo não depende mais do Supabase.
 
-## Preparação e atualização
+## Primeiro acesso
 
-1. Use Python 3.11, crie um ambiente virtual e execute `pip install -r requirements.txt`.
-2. Copie `.env.example` para `.env` e preencha as três variáveis do Supabase. A chave de serviço é obrigatória, fica somente no backend e nunca deve ser enviada ao navegador.
-3. Faça backup do banco existente. No SQL Editor do Supabase, aplique as migrations em ordem:
-   - `202607130000_estrutura.sql`: cria as tabelas ausentes, sem apagar dados.
-   - `202607130001_operacoes_atomicas.sql`: funções originais.
-   - `202609200001_integridade.sql`: funções corrigidas, permissões, cadastro atômico e proteção contra duplicação.
-4. Em bancos que já receberam a migration original, aplique a estrutura e a migration de integridade. Não reaplique a original depois da nova.
-5. A migration de integridade interrompe a instalação se encontrar triggers ativos nas tabelas de compras/vendas. Revise esses triggers e desative somente os que duplicam estoque/financeiro. Ela também rejeita estoque negativo existente; reconcilie os registros antes de repetir. Revise triggers existentes em `auth.users` que criem perfis para evitar conflito com `dekids_criar_perfil`.
-6. As tabelas ficam acessíveis exclusivamente pelo backend com `service_role`; clientes públicos não possuem acesso direto. Políticas RLS antigas não substituem a autorização da API.
-7. Para criar o primeiro administrador, crie uma conta no painel Authentication do Supabase e insira em `public.usuarios` seu UUID, nome, `role = master` e `ativo = true`. Se o perfil já existir, atualize-o. Depois use a tela Usuários.
-8. Inicie a API com `uvicorn app.main:app --reload`.
-9. Em outro terminal PowerShell, configure `$env:DEKIDS_API_URL = "http://localhost:8000"` e execute `streamlit run frontend/Home.py`.
+O ambiente configurado já tem o acesso provisório **Monica**. Use a senha provisória combinada e complete o cadastro com nome, e-mail e uma senha definitiva de pelo menos 8 caracteres. Depois disso, entre com **Monica** ou com o e-mail cadastrado, usando a nova senha.
 
-## Comportamento
+A senha provisória é armazenada apenas como hash com salt no banco e deixa de funcionar quando o cadastro é concluído. Esse acesso permite somente configurar a conta; ele não dá acesso às operações da loja. As demais contas são criadas por um administrador na tela Usuários.
 
-- Login e renovação usam clientes de autenticação separados. A API valida token e perfil ativo em cada requisição protegida.
-- Produtos e variações são criados em uma transação. Contas criadas pela API recebem perfil por trigger na mesma transação de `auth.users`; a role vem de metadados administrativos, nunca de metadados editáveis pelo usuário.
-- Compras e vendas exigem `operacao_id` UUID. Reenvie o mesmo identificador **e os mesmos dados** após falhas de conexão. Alterar o conteúdo com o mesmo identificador é rejeitado.
-- Totais devem corresponder à soma dos itens, com valores monetários decimais enviados como strings. Variações duplicadas são rejeitadas.
-- A tela mantém operações pendentes durante novas tentativas e exige o mesmo usuário após expiração da sessão. Não feche a aba durante uma confirmação incerta: o estado da interface não é persistido após reinício do Streamlit.
-- Listagens aceitam `offset` e `limite` (1 a 500). O saldo financeiro é agregado no banco, independentemente da página exibida.
-- A tela de compras registra uma variação por operação; a API aceita até 500 itens.
+## Iniciar no Windows
 
-## Verificação
+Na pasta do projeto, execute `powershell -ExecutionPolicy Bypass -File iniciar.ps1`.
 
-Execute `python -B -m unittest discover -s tests -v`. Os testes usam credenciais fictícias e mocks; não acessam o Supabase.
+Abra **http://localhost:8501**. O script inicia API e telas em segundo plano, acessíveis somente neste computador, com registros em `.logs/`. Execute `parar.ps1` para encerrar os processos que ele iniciou.
 
-O teste SQL `supabase/tests/integridade.sql` deve ser executado em um projeto de homologação após as migrations. Ele usa transação com rollback e verifica idempotência, estoque, valores e atomicidade. A execução das migrations e os testes de concorrência precisam ser validados no PostgreSQL real antes de produção.
+## Instalação em outro ambiente
 
-## Deploy
+1. Use Python 3.11 e um ambiente virtual.
+2. Instale `pip install -r requirements.txt`.
+3. Configure o `.env` com base em `.env.example`. A API precisa de `DATABASE_URL` (pooled), `DATABASE_URL_UNPOOLED` (migrações) e `NEON_AUTH_BASE_URL`. Nunca envie essas credenciais ao navegador ou ao GitHub.
+4. O `neon.ts` declara `auth: true`. Se estiver provisionando outro ambiente, vincule a branch correta e execute `neon deploy`.
+5. Aplique `python -m app.manage migrate`. Migrações versionadas ficam em `migrations/`; o comando usa a conexão direta, transação e verifica checksums. Não execute os SQL da pasta `supabase/`: são arquivos históricos da versão anterior.
+6. Apenas em um banco novo: `python -m app.manage bootstrap --username Monica`. A senha provisória é solicitada sem aparecer no terminal; não há senha padrão no código.
+7. API: `uvicorn app.main:app --host 127.0.0.1 --port 8000`.
+8. Telas: `streamlit run frontend/Home.py --server.address=127.0.0.1 --server.port=8501`.
 
-Existem Dockerfiles separados para API e Streamlit. Configure segredos no provedor; não copie `.env` para imagens. Aplique as migrations antes de publicar a nova API. A nova versão exige `operacao_id` nas compras/vendas e a chave de serviço; atualize clientes externos junto com o backend.
+## Autenticação e permissões
+
+O login definitivo usa a API HTTP do Neon Auth. A API do DeKids transporta a sessão assinada como um token opaco e consulta `/get-session` com o cache de cookies desativado, além de conferir o perfil ativo no banco. Logout revoga a sessão no provedor. Não há sessão global compartilhada nem senha definitiva armazenada pelo DeKids.
+
+Contas no Neon Auth sem perfil em `dekids.usuarios` não têm acesso ao sistema. Um cadastro interrompido pode ser retomado com o mesmo e-mail e senha; o perfil é concedido somente depois da confirmação da identidade. Somente Master pode criar outro Master. Funcionários podem consultar estoque e vender, mas não acessar finanças, compras ou cadastro de produtos/usuários.
+
+O primeiro acesso exige um token temporário de 15 minutos. Após começar o cadastro, uma repetição deve usar o mesmo e-mail. Limites de tentativas são persistidos no banco. As contas definitivas usam senhas de no mínimo 8 caracteres.
+
+A origem usada pelo backend no Neon Auth é `NEON_AUTH_ORIGIN`, por padrão `http://localhost:8501`. Ao publicar em outro domínio, configure essa origem e autorize-a com `neon neon-auth domain add https://seu-dominio` na branch correta. O fluxo atual não exige envio de e-mail ou verificação por e-mail; recuperação e verificação por e-mail não fazem parte desta versão.
+
+## Consistência das operações
+
+- Compras e vendas exigem UUID `operacao_id`. Repetir o mesmo identificador com os mesmos dados devolve o resultado anterior sem duplicar estoque ou caixa.
+- Se houver falha de conexão, a tela mantém a tentativa pendente. Não feche a aba antes da confirmação; o estado da tela não sobrevive à reinicialização do Streamlit.
+- Valores são calculados com Decimal e enviados como strings. API e banco conferem totais, quantidades, descontos e variações repetidas.
+- Estoque é bloqueado em ordem fixa durante a transação, impedindo venda acima do disponível mesmo com dois caixas simultâneos.
+- Produto e variações são cadastrados em uma transação. O financeiro é agregado no banco, sem depender da página de lançamentos.
+- O pool reutiliza até cinco conexões e libera conexões ociosas. As consultas de produtos paginam e selecionam somente as colunas necessárias.
+
+## Testes
+
+`python -B -m unittest discover -s tests -v` executa os testes locais, sem chamadas externas.
+
+`tests/integration_neon.py` verifica os fluxos reais na branch temporária: primeiro acesso, login, sessão, produtos, compras, vendas, repetição, concorrência, permissões e logout. Ele exige `DEKIDS_ENV_FILE=.env.neon-test`, compara as credenciais com produção e recusa bancos com usuários existentes. Use uma branch descartável nova para repetir o teste completo; não execute em produção.
+
+A branch `dekids-validacao` foi criada com expiração automática em 23/09/2026. As configurações locais principais continuam apontando para `production`.
+
+## Hospedagem
+
+Neon hospeda banco e autenticação. A API Python e o Streamlit ainda precisam executar no computador da loja ou em um provedor de hospedagem. Existem Dockerfiles separados. Configure os segredos no provedor, aplique as migrações antes de iniciar a nova versão e defina `DEKIDS_API_URL` para a URL da API no serviço Streamlit.
+
+A disponibilidade da API pode ser verificada em `/health/ready/`. Nenhum dado do Supabase foi importado.
+
+
+## Render — serviço único gratuito
+
+Use o serviço Docker existente `dekides`, branch `main`, Dockerfile `./Dockerfile`, sem substituir o Docker Command. O Dockerfile principal inicia a API internamente e as telas na porta PORT fornecida pelo Render. Não é necessário criar outro serviço ou banco no Render.
+
+Variáveis obrigatórias: `DATABASE_URL` (conexão pooled da branch production do Neon) e `NEON_AUTH_BASE_URL` (URL pública do Neon Auth). Configure também `NEON_AUTH_ORIGIN=https://dekides.onrender.com` e autorize esse domínio no Neon Auth. As credenciais nunca devem ser colocadas no repositório.
+
+Health check: `/_stcore/health`. Não defina `DEKIDS_API_URL` externo: o iniciador configura a comunicação interna. `DATABASE_URL_UNPOOLED` só é necessário para executar migrações; o banco atual já foi preparado. Migrações futuras são executadas pelo administrador antes de publicar a nova versão.
+
+A instância gratuita pode suspender por inatividade e demora a acordar. Carrinhos e sessões da tela não persistem em reinícios, mas produtos, vendas e usuários ficam no Neon. O `render.yaml` documenta a configuração para novos ambientes; não crie um Blueprint duplicado para o serviço existente.

@@ -8,21 +8,31 @@ Role = Literal["master", "admin", "funcionario"]
 
 
 class Login(BaseModel):
+    email: str = Field(min_length=1, max_length=254)
+    senha: str = Field(min_length=1, max_length=128)
+
+
+class CadastroConta(BaseModel):
     email: str = Field(min_length=3, max_length=254)
-    senha: str = Field(min_length=6, max_length=128)
+    senha: str = Field(min_length=8, max_length=128)
+    nome: str = Field(min_length=2, max_length=120)
 
     @field_validator("email")
     @classmethod
-    def validar_email(cls, value: str) -> str:
-        value = value.strip().lower()
-        if "@" not in value:
+    def validar_email(cls, value):
+        from email_validator import validate_email, EmailNotValidError
+        try:
+            return validate_email(value.strip(), check_deliverability=False).normalized.lower()
+        except EmailNotValidError:
             raise ValueError("Informe um e-mail válido.")
-        return value
 
 
-class UsuarioCadastro(Login):
-    nome: str = Field(min_length=2, max_length=120)
+class UsuarioCadastro(CadastroConta):
     role: Role
+
+
+class PrimeiroAcesso(CadastroConta):
+    setup_token: str = Field(min_length=20, max_length=256)
 
 
 class VariacaoProduto(BaseModel):
