@@ -6,6 +6,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from api_client import request, api_error
 
 st.set_page_config(page_title="Usuários", page_icon="👥", layout="wide")
+
+from branding import mostrar_assinatura
+
+mostrar_assinatura()
 st.title("Cadastrar usuário")
 usuario = st.session_state.get("usuario")
 if not usuario:

@@ -4,6 +4,10 @@ import streamlit as st
 from api_client import API_URL, TIMEOUT, api_error, logout, request
 
 st.set_page_config(page_title="DeKids Sistema", page_icon="🛍️", layout="wide")
+
+from branding import mostrar_assinatura
+
+mostrar_assinatura()
 st.title("🛍️ DeKids Moda Infantil")
 
 if st.session_state.get("setup_token"):

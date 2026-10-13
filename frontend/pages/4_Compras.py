@@ -8,6 +8,10 @@ from api_client import request, api_error, listar_todos
 from money import dinheiro
 
 st.set_page_config(page_title="Compras", page_icon="📥", layout="wide")
+
+from branding import mostrar_assinatura
+
+mostrar_assinatura()
 st.title("Entrada de compras")
 if not st.session_state.get("usuario"):
     st.warning("Faça login na Home.")

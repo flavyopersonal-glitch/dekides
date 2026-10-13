@@ -9,6 +9,10 @@ from api_client import api_error, request, listar_todos  # noqa: E402
 
 st.set_page_config(page_title="Estoque", page_icon="📦", layout="wide")
 
+from branding import mostrar_assinatura
+
+mostrar_assinatura()
+
 if not st.session_state.get("usuario"):
     st.warning("Faça login na página Home para acessar o estoque.")
     st.stop()

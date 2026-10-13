@@ -9,6 +9,10 @@ from api_client import api_error, request  # noqa: E402
 
 st.set_page_config(page_title="Finanças", page_icon="💰", layout="wide")
 
+from branding import mostrar_assinatura
+
+mostrar_assinatura()
+
 if not st.session_state.get("usuario"):
     st.warning("Faça login na página Home para acessar o financeiro.")
     st.stop()
